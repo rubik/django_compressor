@@ -83,8 +83,7 @@ class CompressorMixin(object):
             return cache_key, cache_content
         return None, None
 
-    def render_compressed(self, context, kind, mode, forced=False):
-
+    def render_compressed(self, context, kind, mode, async, forced=False):
         # See if it has been rendered offline
         cached_offline = self.render_offline(context, forced=forced)
         if cached_offline:
@@ -95,7 +94,8 @@ class CompressorMixin(object):
              not settings.COMPRESS_PRECOMPILERS) and not forced):
             return self.get_original_content(context)
 
-        context['compressed'] = {'name': getattr(self, 'name', None)}
+        context['compressed'] = {'name': getattr(self, 'name', None),
+                                 'async': async}
         compressor = self.get_compressor(context, kind)
 
         # Prepare the actual compressor and check cache
@@ -123,10 +123,11 @@ class CompressorMixin(object):
 
 class CompressorNode(CompressorMixin, template.Node):
 
-    def __init__(self, nodelist, kind=None, mode=OUTPUT_FILE, name=None):
+    def __init__(self, nodelist, kind=None, mode=OUTPUT_FILE, async=False, name=None):
         self.nodelist = nodelist
         self.kind = kind
         self.mode = mode
+        self.async = async
         self.name = name
 
     def get_original_content(self, context):
@@ -146,7 +147,8 @@ class CompressorNode(CompressorMixin, template.Node):
         if self.debug_mode(context):
             return self.get_original_content(context)
 
-        return self.render_compressed(context, self.kind, self.mode, forced=forced)
+        return self.render_compressed(context, self.kind, self.mode,
+                                      self.async, forced=forced)
 
 
 @register.tag
@@ -193,22 +195,36 @@ def compress(parser, token):
 
     args = token.split_contents()
 
-    if not len(args) in (2, 3, 4):
+    if not len(args) in (2, 3, 4, 5):
         raise template.TemplateSyntaxError(
-            "%r tag requires either one, two or three arguments." % args[0])
+            "%r tag requires either one, two, three or four arguments." % args[0])
 
     kind = args[1]
+    name = None
+    async = False
 
     if len(args) >= 3:
         mode = args[2]
+        if kind == 'js' and mode == 'async':
+            async = True
+            mode = OUTPUT_FILE
         if not mode in OUTPUT_MODES:
             raise template.TemplateSyntaxError(
                 "%r's second argument must be '%s' or '%s'." %
                 (args[0], OUTPUT_FILE, OUTPUT_INLINE))
     else:
         mode = OUTPUT_FILE
+
+    # compress js async -> async = True, name = None
+    # compress js name  -> async = False, name = name
     if len(args) == 4:
-        name = args[3]
-    else:
-        name = None
-    return CompressorNode(nodelist, kind, mode, name)
+        if kind == 'js' and args[3] == 'async':
+            async = True
+        else:
+            name = args[3]
+    # compress js async name -> async = True, name = name
+    # compress js blabla name -> async = True, name = name
+    elif len(args) == 5:
+        async = True
+        name = args[4]
+    return CompressorNode(nodelist, kind, mode, async, name)
